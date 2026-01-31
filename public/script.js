@@ -8,6 +8,23 @@
   const sendBtn = document.getElementById("send-btn");
   const themeToggle = document.getElementById("theme-toggle");
   const themeIcon = document.getElementById("theme-icon");
+  const splash = document.getElementById("splash");
+  const netStatus = document.getElementById("net-status");
+
+  // splash hide + online/offline status
+  function setNetworkStatus(isOnline) {
+  if (!netStatus) return;
+  netStatus.textContent = isOnline ? "Online" : "Offline";
+  netStatus.classList.toggle("offline", !isOnline);
+  }
+
+  function hideSplash() {
+    if (!splash) return;
+    splash.classList.add("hidden");
+    // Optional: remove from DOM after transition
+    setTimeout(() => splash.remove(), 350);
+  }
+
 
   // Must match backend mapping: conversation items are { role, text }
   const conversation = [];
@@ -34,6 +51,25 @@
     applyTheme(next);
   });
 
+  // Show splash briefly on first load
+  window.addEventListener("load", () => {
+    // Minimal delay so animation feels intentional
+    setTimeout(hideSplash, 700);
+  });
+
+  // Init network status and listen changes
+  setNetworkStatus(navigator.onLine);
+
+  window.addEventListener("online", () => setNetworkStatus(true));
+  window.addEventListener("offline", () => setNetworkStatus(false));
+
+  if (!navigator.onLine) {
+    const warn = "Kamu sedang offline. Cek koneksi internet dulu.";
+    addMessage({ sender: "bot", text: warn, rawTextForCopy: warn }).addCopyIfMissing?.();
+    return;
+  }
+
+
   // ===== Utilities =====
   function nowTime() {
     const d = new Date();
@@ -54,6 +90,7 @@
   function formatTextToHtml(text) {
     const safe = escapeHtml(text);
 
+    // Basic inline markdown
     let t = safe.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
     t = t.replace(/`([^`]+)`/g, "<code>$1</code>");
 
@@ -62,46 +99,80 @@
     let html = "";
     let inUl = false;
     let inOl = false;
+    let pendingBreak = false; // track blank line without instantly closing list
 
     const closeLists = () => {
       if (inUl) { html += "</ul>"; inUl = false; }
       if (inOl) { html += "</ol>"; inOl = false; }
     };
 
-    for (const rawLine of lines) {
-      const line = rawLine.trimEnd();
-      const trimmed = line.trim();
+    const openUl = () => {
+      if (inOl) { html += "</ol>"; inOl = false; }
+      if (!inUl) { html += "<ul>"; inUl = true; }
+    };
 
+    const openOl = () => {
+      if (inUl) { html += "</ul>"; inUl = false; }
+      if (!inOl) { html += "<ol>"; inOl = true; }
+    };
+
+    for (let i = 0; i < lines.length; i++) {
+      const raw = lines[i];
+      const trimmed = raw.trim();
+
+      // Handle blank lines:
+      // Don't immediately close lists; wait to see next meaningful line.
       if (!trimmed) {
-        closeLists();
-        html += "<p></p>";
+        pendingBreak = true;
         continue;
       }
 
-      // "- item"
-      if (/^\-\s+/.test(trimmed)) {
-        if (inOl) { html += "</ol>"; inOl = false; }
-        if (!inUl) { html += "<ul>"; inUl = true; }
-        html += `<li>${trimmed.replace(/^\-\s+/, "")}</li>`;
+      // If we had blank line(s) before this:
+      // - If next line continues a list, keep list open.
+      // - If next line is not a list, then close lists and add spacing.
+      if (pendingBreak) {
+        const isNextList =
+          /^(\*|\-|\•)\s+/.test(trimmed) || /^\d+[\.\)]\s+/.test(trimmed);
+
+        if (!isNextList) {
+          closeLists();
+          html += "<p></p>";
+        }
+        pendingBreak = false;
+      }
+
+      // Bullets: "* item" OR "- item" OR "• item"
+      if (/^(\*|\-|\•)\s+/.test(trimmed)) {
+        openUl();
+        html += `<li>${trimmed.replace(/^(\*|\-|\•)\s+/, "")}</li>`;
         continue;
       }
 
-      // "1. item" or "1) item"
+      // Ordered list: "1. item" OR "1) item"
       if (/^\d+[\.\)]\s+/.test(trimmed)) {
-        if (inUl) { html += "</ul>"; inUl = false; }
-        if (!inOl) { html += "<ol>"; inOl = true; }
+        openOl();
+        // Remove original numbering so <ol> auto numbers 1,2,3...
         html += `<li>${trimmed.replace(/^\d+[\.\)]\s+/, "")}</li>`;
         continue;
       }
 
+      // Normal paragraph line
       closeLists();
       html += `<p>${trimmed}</p>`;
     }
 
-    closeLists();
+    // If file ends while pendingBreak
+    if (pendingBreak) {
+      closeLists();
+    } else {
+      closeLists();
+    }
+
+    // Clean excessive empty paragraphs
     html = html.replace(/(<p><\/p>){2,}/g, "<p></p>");
     return html;
   }
+
 
   function scrollToBottom() {
     chatBox.scrollTop = chatBox.scrollHeight;
